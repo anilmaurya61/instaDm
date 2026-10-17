@@ -31,13 +31,17 @@ export async function proxy(request: NextRequest) {
   // `__Secure-authjs.session-token` (the salt is the cookie name itself), so
   // without this flag the edge check sees no cookie and bounces every signed-in
   // user back to /login. Mirror the server's own rule exactly — it derives
-  // useSecureCookies from the incoming request URL's protocol (init.ts:
-  // useSecureCookies ?? url.protocol === "https:", url built from req.url in
-  // toInternalRequest). request.nextUrl sees the same normalized URL, so this
-  // stays in sync in both directions: https (tunnel/deployed) and local http
-  // dev. A NEXTAUTH_URL-based override would desync localhost dev, where the
-  // server sets the unprefixed cookie.
-  const secureCookie = request.nextUrl.protocol === "https:";
+  // useSecureCookies from the request URL's protocol (init.ts:
+  // useSecureCookies ?? url.protocol === "https:"), but next-auth first
+  // rewrites that URL's origin to AUTH_URL/NEXTAUTH_URL when set
+  // (next-auth/lib/env.js reqWithEnvURL). So with an https NEXTAUTH_URL the
+  // server uses `__Secure-` cookies even on http://localhost. Reading a
+  // different cookie name here means signOut clears one cookie while this
+  // check reads another (e.g. a stale unprefixed one) and logout looks broken.
+  const envUrl = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL;
+  const secureCookie =
+    (envUrl ? new URL(envUrl).protocol : request.nextUrl.protocol) ===
+    "https:";
   const token = await getToken({
     req: request,
     secret: process.env.NEXTAUTH_SECRET,
