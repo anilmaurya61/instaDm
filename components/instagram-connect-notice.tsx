@@ -52,7 +52,7 @@ export function InstagramConnectNotice() {
     return (
       <Notice tone="error" title="Instagram app not configured">
         <p>
-          Set{" "}
+          Set (or correct){" "}
           {missing.length > 0
             ? "these environment variables"
             : "the required environment variables"}{" "}

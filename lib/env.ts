@@ -15,7 +15,11 @@ export function requireEnv(name: string): string {
 }
 
 export function getBaseUrl(): string {
-  return process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+  // A trailing slash on NEXTAUTH_URL otherwise produces `//api/...` in the
+  // OAuth redirect URI, which Meta rejects because it must match the URI
+  // registered on the app exactly.
+  const raw = process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+  return raw.replace(/\/+$/, "");
 }
 
 export function getEncryptionKeyHex(): string {
@@ -40,6 +44,10 @@ export function getMissingInstagramOAuthEnv(): string[] {
   return INSTAGRAM_OAUTH_ENV.filter((name) => {
     const value = process.env[name];
     if (!value) return true;
+    // Meta app IDs are numeric. A value pasted with its own name attached
+    // (`INSTAGRAM_APP_ID=123`) is a common dashboard mistake that Meta answers
+    // with an opaque "page isn't available" instead of naming the culprit.
+    if (name === "INSTAGRAM_APP_ID" && !/^\d+$/.test(value.trim())) return true;
     // A malformed key fails later inside encryptToken, after the user has
     // already round-tripped through Meta — catch the bad format here instead.
     return name === "ENCRYPTION_KEY" && !HEX_32_BYTE.test(value);

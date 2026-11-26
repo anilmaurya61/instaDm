@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   getEncryptionKeyHex,
   getMetaGraphApiVersion,
+  getMissingInstagramOAuthEnv,
   requireEnv,
 } from "../lib/env";
 
@@ -25,5 +26,29 @@ describe("environment helpers", () => {
 
   it("defaults Meta Graph API version in one place", () => {
     expect(getMetaGraphApiVersion()).toBe("v26.0");
+  });
+
+  it("flags an Instagram app id pasted with its variable name attached", () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "test-secret-with-enough-length");
+    vi.stubEnv(
+      "ENCRYPTION_KEY",
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    vi.stubEnv("INSTAGRAM_APP_SECRET", "app-secret");
+    vi.stubEnv("INSTAGRAM_APP_ID", "INSTAGRAM_APP_ID=1495314182408497");
+
+    expect(getMissingInstagramOAuthEnv()).toEqual(["INSTAGRAM_APP_ID"]);
+  });
+
+  it("accepts a numeric Instagram app id", () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "test-secret-with-enough-length");
+    vi.stubEnv(
+      "ENCRYPTION_KEY",
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    vi.stubEnv("INSTAGRAM_APP_SECRET", "app-secret");
+    vi.stubEnv("INSTAGRAM_APP_ID", "1495314182408497");
+
+    expect(getMissingInstagramOAuthEnv()).toEqual([]);
   });
 });
