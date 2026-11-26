@@ -48,6 +48,18 @@ import { hasOpenMessagingWindow } from "@/lib/meta/messaging-window";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
+// A row left PENDING by a worker that stalled or lost the database mid-send
+// blocks every later attempt: the reconciler re-enqueues the comment, but
+// processComment sees PENDING and skips, so the DM is never delivered. PENDING
+// is only trustworthy while the job that claimed it can still be running, so
+// older rows are treated as abandoned and reclaimed. Well above the slowest
+// legitimate Meta call, well below a polling sweep interval.
+const STALE_PENDING_MS = 10 * 60 * 1000;
+
+function isStalePending(updatedAt: Date): boolean {
+  return Date.now() - updatedAt.getTime() > STALE_PENDING_MS;
+}
+
 function formatError(error: unknown): string {
   if (error instanceof MetaApiError) {
     return `Meta API Error ${error.code}: ${error.message}`;
@@ -325,7 +337,11 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // the read, both call Meta, and one burns the single allowed reply.
     let txResult: {
       action: "proceed" | "publicOnly" | "dedup" | "skip";
-      existingLog: { status: string; publicReplySentAt: Date | null } | null;
+      existingLog: {
+        status: string;
+        publicReplySentAt: Date | null;
+        updatedAt: Date;
+      } | null;
     } | null = null;
     try {
       txResult = await prisma.$transaction(async (tx) => {
@@ -338,13 +354,15 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
               commentId,
             },
           },
-          select: { status: true, publicReplySentAt: true },
+          select: { status: true, publicReplySentAt: true, updatedAt: true },
         });
 
         if (dbExisting?.status === "SKIPPED_PLAN_LIMIT") {
           return { action: "skip" as const, existingLog: dbExisting as typeof dbExisting };
         }
-        if (dbExisting?.status === "PENDING") {
+        // Reclaim a PENDING row whose claiming worker is gone (stalled job,
+        // database timeout mid-send) instead of skipping forever.
+        if (dbExisting?.status === "PENDING" && !isStalePending(dbExisting.updatedAt)) {
           return { action: "skip" as const, existingLog: dbExisting as typeof dbExisting };
         }
         const alreadyDmd = dbExisting?.status === "SENT";
@@ -1254,12 +1272,12 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
               commentId: dedupeId,
             },
           },
-          select: { status: true },
+          select: { status: true, updatedAt: true },
         });
         if (
           existing?.status === "SENT" ||
           existing?.status === "SKIPPED_PLAN_LIMIT" ||
-          existing?.status === "PENDING"
+          (existing?.status === "PENDING" && !isStalePending(existing.updatedAt))
         ) {
           canProceed = false;
           return;
@@ -1825,6 +1843,38 @@ async function recordWorkerFailure(
   }
 }
 
+// During a Redis/database outage BullMQ emits an `error` for every failed lock
+// renewal and stalled job. Each one used to open a Postgres write, competing for
+// the worker's two-connection pool; when the database is the thing that is down,
+// the write itself sits on a connection for the whole 30s connect timeout, so
+// the worker spends its entire pool on doomed log rows and real jobs queue
+// behind them ("timeout exceeded when trying to connect"). Console output stays
+// per-error; the durable row is coalesced to one per minute.
+const PROCESS_ERROR_LOG_INTERVAL_MS = 60_000;
+let lastProcessErrorLoggedAt = 0;
+
+async function recordWorkerProcessError(error: Error) {
+  const now = Date.now();
+  if (now - lastProcessErrorLoggedAt < PROCESS_ERROR_LOG_INTERVAL_MS) return;
+  lastProcessErrorLoggedAt = now;
+
+  try {
+    await prisma.operationalEvent.create({
+      data: {
+        source: "WORKER",
+        level: "ERROR",
+        message: `DM worker process error: ${error.message}`,
+        payload: { name: error.name },
+      },
+    });
+  } catch (recordError) {
+    console.error(
+      "[DM Worker] Failed to record worker process error:",
+      formatError(recordError)
+    );
+  }
+}
+
 export function createDMWorker(): Worker<DmQueueJob> {
   const worker = new Worker<DmQueueJob>(
     "dm-processing",
@@ -1855,21 +1905,7 @@ export function createDMWorker(): Worker<DmQueueJob> {
 
   worker.on("error", (err) => {
     console.error("[DM Worker] Worker error:", err.message);
-    void prisma.operationalEvent
-      .create({
-        data: {
-          source: "WORKER",
-          level: "ERROR",
-          message: `DM worker process error: ${err.message}`,
-          payload: { name: err.name },
-        },
-      })
-      .catch((recordError) => {
-        console.error(
-          "[DM Worker] Failed to record worker process error:",
-          formatError(recordError)
-        );
-      });
+    void recordWorkerProcessError(err);
   });
 
   return worker;
