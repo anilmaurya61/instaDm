@@ -28,6 +28,12 @@ WORKDIR /app
 COPY deploy/worker/runtime/package.json ./package.json
 COPY deploy/worker/runtime/package-lock.json ./package-lock.json
 
+# The builder image and the distroless runtime detect different Prisma engine
+# targets, so fetch the ones the runtime actually resolves (see
+# get/platform: debian x64 and arm64 on OpenSSL 3.0). Without this the CLI tries
+# to download the engine on first use, which the read-only image rejects.
+ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x,linux-arm64-openssl-3.0.x"
+
 RUN npm ci --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
@@ -39,7 +45,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NODE_OPTIONS="--enable-source-maps --network-family-autoselection-attempt-timeout=2000"
 
-COPY --from=runtime-dependencies /app/node_modules ./node_modules
+# Owned by nonroot so the CLI can still cache an engine at start on platforms
+# whose binary was not pre-fetched above.
+COPY --chown=65532:65532 --from=runtime-dependencies /app/node_modules ./node_modules
 COPY --from=runtime-dependencies /app/package.json ./package.json
 
 COPY --from=builder /app/dist/worker.mjs ./dist/worker.mjs
