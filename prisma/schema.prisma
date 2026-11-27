@@ -139,6 +139,10 @@ model InstagramAccount {
   accessToken            String
   tokenExpiresAt         DateTime?
   webhookSubscribed      Boolean   @default(false)
+  /// Meta rejected this account's token (error 190) — the user must reconnect
+  /// before any send can succeed. Cleared by the OAuth callback.
+  needsReconnect         Boolean   @default(false)
+  lastTokenError         String?
   fallbackReplyEnabled   Boolean   @default(false)
   fallbackReplyMessage   String?
   connectedAt            DateTime  @default(now())

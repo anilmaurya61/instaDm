@@ -10,7 +10,7 @@ This checklist tracks all ongoing bugs, optimizations, setup items, and new feat
 
 - [x] **Sanitize Destination URLs in Link Tracker**: [`app/r/[slug]/route.ts`](/app/r/%5Bslug%5D/route.ts) now catches malformed destinations and rejects non-`http:`/`https:` schemes before redirecting.
 - [x] **Prevent Overlapping Polling Sweeps**: [`worker/dm-worker.ts`](/worker/dm-worker.ts) uses a guarded recursive `setTimeout` loop, so a slow reconciliation sweep cannot overlap the next one.
-- [ ] **Graceful Meta Token Expiry Handling**: Handle `TokenExpiredError` (Meta error 190) in [`lib/queue/dm-worker.ts`](/lib/queue/dm-worker.ts), update `InstagramAccount` connection status, and log user alerts.
+- [x] **Graceful Meta Token Expiry Handling**: `TokenExpiredError` (Meta error 190) now flags `InstagramAccount.needsReconnect` via [`lib/meta/token-health.ts`](/lib/meta/token-health.ts), logs one `OperationalEvent` + worker alert per incident, stops retrying dead-token jobs, skips new sends while flagged, and surfaces a Reconnect action in Settings.
 - [x] **Atomic DM Deduplication**: [`lib/queue/dm-worker.ts`](/lib/queue/dm-worker.ts) claims comment processing inside a transaction protected by a PostgreSQL advisory lock and the `(automationId, commentId)` unique key.
 - [x] **Eliminate N+1 Webhook DB Queries**: [`app/api/webhook/route.ts`](/app/api/webhook/route.ts) groups read events by Instagram account and performs one lookup per account instead of one query per event.
 - [ ] **Standardize Follow-Gate Status Behavior**: Align follow-gate `null` status fallback handling across comment triggers and postback button taps.

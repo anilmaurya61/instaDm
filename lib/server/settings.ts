@@ -107,6 +107,8 @@ export async function getSettingsData(
         accessToken: true,
         tokenExpiresAt: true,
         webhookSubscribed: true,
+        needsReconnect: true,
+        lastTokenError: true,
       },
     }),
   ]);

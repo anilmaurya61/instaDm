@@ -28,6 +28,7 @@ import {
   sendPrivateReplyWithLinkButton,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
+import { flagInstagramReconnect } from "@/lib/meta/token-health";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
 import {
@@ -55,6 +56,10 @@ const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 // older rows are treated as abandoned and reclaimed. Well above the slowest
 // legitimate Meta call, well below a polling sweep interval.
 const STALE_PENDING_MS = 10 * 60 * 1000;
+
+// Shown on DmLog rows created while the account's token is known to be dead.
+const RECONNECT_REQUIRED_MESSAGE =
+  "Instagram access token expired; reconnect the account in Settings";
 
 function isStalePending(updatedAt: Date): boolean {
   return Date.now() - updatedAt.getTime() > STALE_PENDING_MS;
@@ -267,6 +272,48 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         );
 
     if (!matchResult.matched) {
+      continue;
+    }
+
+    // Meta has already rejected this token: every send will fail the same way
+    // until the account is reconnected, so don't burn the API call and a retry
+    // on each new comment.
+    if (automation.instagramAccount.needsReconnect) {
+      const existing = await prisma.dmLog.findUnique({
+        where: {
+          automationId_commentId: {
+            automationId: automation.id,
+            commentId,
+          },
+        },
+        select: { status: true },
+      });
+      if (existing?.status !== "SENT") {
+        await prisma.dmLog.upsert({
+          where: {
+            automationId_commentId: {
+              automationId: automation.id,
+              commentId,
+            },
+          },
+          create: {
+            workspaceId: automation.workspaceId,
+            automationId: automation.id,
+            instagramAccountId: automation.instagramAccountId,
+            commenterId,
+            commenterName,
+            commentText,
+            commentId,
+            matchedKeyword: matchResult.matchedKeyword,
+            status: "FAILED",
+            errorMessage: RECONNECT_REQUIRED_MESSAGE,
+          },
+          update: {
+            status: "FAILED",
+            errorMessage: RECONNECT_REQUIRED_MESSAGE,
+          },
+        });
+      }
       continue;
     }
 
@@ -507,6 +554,31 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
             data: { publicReplyError: formatError(error) },
           })
           .catch(() => {});
+
+        // A dead token fails the private reply below too. Flag the account for
+        // a reconnect and stop this job now instead of spending its retries
+        // against Meta, which only returns the same 190.
+        if (error instanceof TokenExpiredError) {
+          await flagInstagramReconnect({
+            instagramAccountId: automation.instagramAccountId,
+            username: automation.instagramAccount.username,
+            workspaceId: automation.workspaceId,
+            errorMessage: formatError(error),
+          });
+          await prisma.dmLog
+            .update({
+              where: {
+                automationId_commentId: { automationId: automation.id, commentId },
+              },
+              data: {
+                status: "FAILED",
+                attempts: job.attemptsMade + 1,
+                errorMessage: formatError(error),
+              },
+            })
+            .catch(() => {});
+          return;
+        }
       }
     }
 
@@ -804,6 +876,15 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: formatError(error),
         },
       });
+      if (error instanceof TokenExpiredError) {
+        await flagInstagramReconnect({
+          instagramAccountId: automation.instagramAccountId,
+          username: automation.instagramAccount.username,
+          workspaceId: automation.workspaceId,
+          errorMessage: formatError(error),
+        });
+        throw new UnrecoverableError(formatError(error));
+      }
       throw error;
     }
   }
@@ -838,7 +919,8 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   if (
     !automation ||
     automation.instagramAccount.instagramId !== instagramAccountId ||
-    !automation.instagramAccount.accessToken
+    !automation.instagramAccount.accessToken ||
+    automation.instagramAccount.needsReconnect
   ) {
     return;
   }
@@ -903,6 +985,14 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           "[DM Worker] Failed to re-send follow prompt:",
           formatError(error)
         );
+        if (error instanceof TokenExpiredError) {
+          await flagInstagramReconnect({
+            instagramAccountId: automation.instagramAccountId,
+            username: automation.instagramAccount.username,
+            workspaceId: automation.workspaceId,
+            errorMessage: formatError(error),
+          });
+        }
       }
       return;
     }
@@ -1011,6 +1101,15 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
       },
       update: { status: "FAILED", errorMessage: formatError(error) },
     });
+    if (error instanceof TokenExpiredError) {
+      await flagInstagramReconnect({
+        instagramAccountId: automation.instagramAccountId,
+        username: automation.instagramAccount.username,
+        workspaceId: automation.workspaceId,
+        errorMessage: formatError(error),
+      });
+      throw new UnrecoverableError(formatError(error));
+    }
     throw error;
   }
 }
@@ -1085,6 +1184,14 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
       where,
       data: { status: "FAILED", errorMessage: formatError(error) },
     });
+    if (error instanceof TokenExpiredError) {
+      await flagInstagramReconnect({
+        instagramAccountId: automation.instagramAccountId,
+        username: automation.instagramAccount.username,
+        workspaceId: automation.workspaceId,
+        errorMessage: formatError(error),
+      });
+    }
     if (
       error instanceof MessagingWindowClosedError ||
       error instanceof TokenExpiredError ||
@@ -1182,6 +1289,27 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       commentId: dedupeId,
       matchedKeyword: matchResult.matchedKeyword,
     };
+
+    if (automation.instagramAccount.needsReconnect) {
+      await prisma.dmLog.upsert({
+        where: {
+          automationId_commentId: {
+            automationId: automation.id,
+            commentId: dedupeId,
+          },
+        },
+        create: {
+          ...logBase,
+          status: "FAILED",
+          errorMessage: RECONNECT_REQUIRED_MESSAGE,
+        },
+        update: {
+          status: "FAILED",
+          errorMessage: RECONNECT_REQUIRED_MESSAGE,
+        },
+      });
+      continue;
+    }
 
     if (!automation.instagramAccount.accessToken) {
       console.log(`[DM Worker] processMessage: campaign "${automation.name}" has NO access token, marking FAILED`);
@@ -1435,6 +1563,15 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           errorMessage: formatError(error),
         },
       });
+      if (error instanceof TokenExpiredError) {
+        await flagInstagramReconnect({
+          instagramAccountId: automation.instagramAccountId,
+          username: automation.instagramAccount.username,
+          workspaceId: automation.workspaceId,
+          errorMessage: formatError(error),
+        });
+        throw new UnrecoverableError(formatError(error));
+      }
       throw error;
     }
   }
@@ -1493,11 +1630,17 @@ async function processInboxAutomations(opts: {
 }): Promise<boolean> {
   const { instagramAccountId, messageId, messageText, senderId, attemptsMade } = opts;
 
-  const account = await prisma.instagramAccount.findUnique({
-    where: { instagramId: instagramAccountId },
-    select: { id: true, workspaceId: true, instagramId: true, accessToken: true },
-  });
-  if (!account) return false;
+      const account = await prisma.instagramAccount.findUnique({
+      where: { instagramId: instagramAccountId },
+      select: {
+        id: true,
+        workspaceId: true,
+        instagramId: true,
+        accessToken: true,
+        needsReconnect: true,
+      },
+    });
+    if (!account || account.needsReconnect) return false;
 
   const config = (await prisma.inboxAutomation.findUnique({
     where: { instagramAccountId: account.id },
@@ -1809,9 +1952,21 @@ async function recordWorkerFailure(
     const account = instagramAccountId
       ? await prisma.instagramAccount.findUnique({
           where: { instagramId: instagramAccountId },
-          select: { workspaceId: true },
+          select: { id: true, username: true, workspaceId: true },
         })
       : null;
+
+    // Catch-all for token 190s raised outside a send's own catch (follow-status
+    // lookups, inbox automations, anything new): the account still has to be
+    // flagged for a reconnect, not just the job.
+    if (error instanceof TokenExpiredError && account) {
+      await flagInstagramReconnect({
+        instagramAccountId: account.id,
+        username: account.username,
+        workspaceId: account.workspaceId,
+        errorMessage: formatError(error),
+      });
+    }
 
     await prisma.operationalEvent.create({
       data: {

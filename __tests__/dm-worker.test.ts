@@ -54,6 +54,7 @@ const {
     instagramAccount: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
+      updateMany: vi.fn(),
     },
     inboxAutomation: {
       findMany: vi.fn(),
@@ -278,8 +279,11 @@ beforeEach(() => {
   mockPrisma.dmLog.upsert.mockResolvedValue({});
   mockPrisma.dmLog.update.mockResolvedValue({});
   mockPrisma.instagramAccount.findUnique.mockResolvedValue({
+    id: "ig_account_row_1",
+    username: "test_account",
     workspaceId: "workspace_123",
   });
+  mockPrisma.instagramAccount.updateMany.mockResolvedValue({ count: 1 });
   // Inbox automations (DM-only tiers): no config by default, so a DM that
   // matches no campaign keyword sends nothing — same as the legacy behavior
   // when the fallback reply was disabled.
@@ -418,6 +422,28 @@ describe("DM Worker — follow-up delivery", () => {
         data: { status: "FAILED", errorMessage: error.message },
       }));
     }
+  });
+
+  it("flags the account for a reconnect when Meta rejects the token", async () => {
+    const { TokenExpiredError } = await import("@/lib/meta/client");
+    mockSendDirectMessage.mockRejectedValueOnce(
+      new TokenExpiredError("Session has been invalidated")
+    );
+
+    await expect(getProcessor()(job)).rejects.toMatchObject({ name: "UnrecoverableError" });
+
+    expect(mockPrisma.instagramAccount.updateMany).toHaveBeenCalledWith({
+      where: { id: "ig_account_row_1", needsReconnect: false },
+      data: {
+        needsReconnect: true,
+        lastTokenError: "Session has been invalidated",
+      },
+    });
+    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ level: "ERROR" }),
+      })
+    );
   });
 
   it("records invalid encryption instead of silently completing", async () => {

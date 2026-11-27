@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { decryptToken, encryptToken } from "@/lib/meta/oauth";
-import { refreshLongLivedToken } from "@/lib/meta/client";
+import { refreshLongLivedToken, TokenExpiredError } from "@/lib/meta/client";
 
 const DAYS_BEFORE_EXPIRY = 10;
 
@@ -69,6 +69,8 @@ export async function GET(request: NextRequest) {
         data: {
           accessToken: encryptedToken,
           tokenExpiresAt: newExpiry,
+          needsReconnect: false,
+          lastTokenError: null,
         },
       });
 
@@ -91,6 +93,16 @@ export async function GET(request: NextRequest) {
           },
         },
       });
+
+      // Error 190 means this token can never be refreshed — only a new OAuth
+      // grant fixes it. Flag it so the dashboard asks the user to reconnect
+      // instead of the worker discovering it one failed DM at a time.
+      if (err instanceof TokenExpiredError) {
+        await prisma.instagramAccount.update({
+          where: { id: account.id },
+          data: { needsReconnect: true, lastTokenError: errorMessage },
+        });
+      }
 
       results.push({
         instagramAccountId: account.id,

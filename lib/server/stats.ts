@@ -37,6 +37,10 @@ export interface InstagramAccountStat {
   name: string | null;
   tokenExpiresAt: string | null;
   webhookSubscribed: boolean;
+  /** Meta rejected the stored token (error 190); user must reconnect. */
+  needsReconnect: boolean;
+  /** Last rejection message from Meta, for diagnostics. */
+  lastTokenError?: string | null;
   /** Meta `profile_picture_url` (24h-cached). Null when unavailable. */
   profilePictureUrl?: string | null;
 }
@@ -199,6 +203,8 @@ async function computeDashboardSummary(
         name: true,
         tokenExpiresAt: true,
         webhookSubscribed: true,
+        needsReconnect: true,
+        lastTokenError: true,
       },
     }),
     prisma.automation.count({ where: { workspaceId, ...accountFilter } }),

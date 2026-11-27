@@ -101,6 +101,9 @@ export async function GET(request: NextRequest) {
         accessToken: encryptedToken,
         tokenExpiresAt,
         webhookSubscribed,
+        // A fresh token clears any reconnect warning from a rejected one.
+        needsReconnect: false,
+        lastTokenError: null,
       },
     });
 

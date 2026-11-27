@@ -156,6 +156,11 @@ export default function SettingsAccounts({
                         ? "Webhook ready"
                         : "Webhook pending"}
                     </Badge>
+                    {account.needsReconnect && (
+                      <Badge variant="destructive" className="text-[10px]">
+                        Reconnect needed
+                      </Badge>
+                    )}
                   </div>
                   </div>
                 </div>
@@ -183,6 +188,24 @@ export default function SettingsAccounts({
                   )}
                 </div>
               </div>
+              {account.needsReconnect && (
+                <div className="flex flex-col gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive sm:flex-row sm:items-center sm:justify-between">
+                  <span>
+                    Instagram rejected this account&apos;s access token, so
+                    replies are paused until you reconnect.
+                  </span>
+                  {canManage && (
+                    <a
+                      href="/api/instagram/connect"
+                      className={cn(
+                        buttonVariants({ variant: "outline", size: "sm" })
+                      )}
+                    >
+                      Reconnect
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
