@@ -448,6 +448,8 @@ sounogh/openinstadm-worker:latest
 
 The image is public, so `docker login` is not required. Prefer an immutable release tag when one is available instead of continuously following `latest`.
 
+The image applies pending Prisma migrations (`prisma migrate deploy`) against `DATABASE_URL` every time it starts, before the worker begins processing jobs, so a redeploy is enough to bring the schema up to date. It exits with a non-zero status if a migration fails instead of starting against an out-of-date schema. Set `MIGRATE_ON_START=false` in the worker environment when migrations should be owned by something else, such as a separate release job or several worker replicas starting at once.
+
 #### 1. Prepare the VM
 
 Use a Linux VM with a reserved public IP and Docker Engine with the Compose plugin installed. On Ubuntu, Docker's [official installation guide](https://docs.docker.com/engine/install/ubuntu/) is the recommended starting point.

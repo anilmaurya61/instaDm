@@ -45,4 +45,10 @@ COPY --from=runtime-dependencies /app/package.json ./package.json
 COPY --from=builder /app/dist/worker.mjs ./dist/worker.mjs
 COPY --from=builder /app/dist/worker.mjs.map ./dist/worker.mjs.map
 
-CMD ["dist/worker.mjs"]
+# Migrations run at container start, so the schema, migration history and the
+# Prisma config that points at DATABASE_URL ship with the image.
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+COPY deploy/worker/start.mjs ./start.mjs
+
+CMD ["start.mjs"]
